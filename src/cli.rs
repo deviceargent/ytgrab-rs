@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long)]
     pub dump_json: bool,
 
+    /// Print metadata plus every available format as JSON and exit
+    #[arg(long)]
+    pub formats_json: bool,
+
     /// Write the metadata alongside the download
     #[arg(long)]
     pub write_info_json: bool,

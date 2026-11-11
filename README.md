@@ -63,6 +63,7 @@ ytgrab -x --audio-format mp3 URL
 
 # inspect what is available
 ytgrab --list-formats URL
+ytgrab --formats-json URL
 ytgrab --get-url URL
 ytgrab --dump-json URL
 
@@ -104,6 +105,32 @@ ytgrab --cookies-from-browser brave URL       # chrome, brave, chromium, edge, f
 
 Browser cookies on Linux live in the OS keyring, so a running D-Bus session
 and an unlocked keyring are required (`secret-tool` is used under the hood).
+
+## GUI
+
+`ui/YtGrabGui` is a WinUI 3 front-end built with
+[Microsoft.UI.Reactor](https://github.com/microsoft/microsoft-ui-reactor). It
+mirrors the Regedit Reactor skin: deep navy surfaces, a blue → purple → amber
+accent ramp, and one hue per format kind. The GUI never talks to YouTube
+itself — it shells out to the `ytgrab` binary, consumes `--formats-json` for
+metadata and parses the indicatif progress lines for the queue.
+
+```sh
+# 1. build the CLI
+cargo build --release
+
+# 2. build the GUI (Reactor is consumed from a sibling checkout)
+dotnet build ui/YtGrabGui -p:Platform=x64 `
+  -p:ReactorProject=..\..\reactor\src\Reactor\Reactor.csproj
+
+# 3. run it
+ui/YtGrabGui/bin/x64/Debug/net10.0-windows10.0.22621.0/YtGrabGui.exe
+```
+
+The app looks for `ytgrab.exe` next to itself, in `target/release` or
+`target/debug` of any ancestor, on `PATH`, or at `YTGRAB_PATH`. When the binary
+is missing it loads a bundled demo dataset so the UI can still be reviewed;
+downloads from that dataset are simulated.
 
 ## Current state
 

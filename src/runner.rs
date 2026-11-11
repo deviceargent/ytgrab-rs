@@ -147,6 +147,11 @@ async fn download_video(
             return Ok(());
         }
 
+        if cli.formats_json {
+            println!("{}", build_formats_json(&player, &formats, video_id));
+            return Ok(());
+        }
+
         let selector = Selector::parse(&cli.format)?;
         let selection = formats::select_excluding_with(
             &selector,
@@ -734,10 +739,56 @@ fn build_info_json(
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".into())
 }
 
+/// Machine-readable metadata + *every* available format.
+///
+/// `--dump-json` only describes the formats the selector picked, which is not
+/// enough for a GUI that lets the user choose. This dumps the full list with
+/// the classification (`has_video` / `has_audio`) already resolved.
+fn build_formats_json(
+    player: &PlayerResponse,
+    formats: &[Format],
+    video_id: &str,
+) -> String {
+    let details = player.video_details.clone().unwrap_or_default();
+
+    let formats_json: Vec<serde_json::Value> = formats
+        .iter()
+        .map(|f| {
+            json!({
+                "format_id": f.itag.to_string(),
+                "ext": f.ext(),
+                "height": f.height(),
+                "fps": f.fps(),
+                "vcodec": f.vcodec(),
+                "acodec": f.acodec(),
+                "tbr": f.tbr(),
+                "filesize": f.size_bytes(),
+                "has_video": f.has_video(),
+                "has_audio": f.has_audio(),
+                "url": f.url,
+            })
+        })
+        .collect();
+
+    let doc = json!({
+        "id": video_id,
+        "title": details.title,
+        "uploader": details.author,
+        "channel_id": details.channel_id,
+        "description": details.short_description,
+        "duration": details.duration_secs(),
+        "view_count": details.view_count.as_ref().and_then(|v| v.parse::<u64>().ok()),
+        "webpage_url": format!("https://www.youtube.com/watch?v={video_id}"),
+        "thumbnail": format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
+        "extractor": "innertube:android",
+        "formats": formats_json,
+    });
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".into())
+}
+
 /// Helper for the caption track language list (used by --dump-json).
 #[allow(dead_code)]
-pub fn caption_languages(player: &PlayerResponse) -> Vec<String> {
-    player
+pub fn caption_languages(player: &PlayerResponse) -> Vec<String> {    player
         .captions
         .as_ref()
         .and_then(|c| c.player_captions_tracklist_renderer.as_ref())

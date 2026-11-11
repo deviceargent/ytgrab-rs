@@ -4,3 +4,9 @@
 *.part.seg*
 *.lock
 *.info.json
+
+# .NET / WinUI GUI artifacts
+ui/**/bin/
+ui/**/obj/
+ui/**/.vs/
+ui/**/*.user

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WinUI 3 + Reactor front-end for the ytgrab CLI.
+
+    Reactor is consumed from source because it is not published as a
+    standalone NuGet package. Clone microsoft-ui-reactor next to this
+    repository, or pass an explicit path:
+
+      dotnet build ui/YtGrabGui -p:Platform=x64 `
+        -p:ReactorProject=C:\src\reactor\src\Reactor\Reactor.csproj
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <Platforms>x64;ARM64</Platforms>
+    <RootNamespace>YtGrabGui</RootNamespace>
+    <AssemblyName>YtGrabGui</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <IsAotCompatible>false</IsAotCompatible>
+
+    <!-- Sibling checkout by default; override with -p:ReactorProject=... -->
+    <ReactorProject Condition="'$(ReactorProject)' == ''">$(MSBuildThisFileDirectory)..\..\..\reactor\src\Reactor\Reactor.csproj</ReactorProject>
+  </PropertyGroup>
+
+  <Target Name="CheckReactorProject" BeforeTargets="ResolveProjectReferences">
+    <Error Condition="!Exists('$(ReactorProject)')"
+           Text="Reactor project not found at '$(ReactorProject)'. Clone microsoft-ui-reactor next to ytgrab-rs, or build with -p:ReactorProject=path\to\Reactor.csproj." />
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="$(ReactorProject)" />
+  </ItemGroup>
+
+</Project>
