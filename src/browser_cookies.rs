@@ -125,25 +125,6 @@ fn pbkdf2_sha1(password: &[u8], salt: &[u8]) -> [u8; 16] {
     key
 }
 
-fn decrypt_v10(encrypted: &[u8], password: &[u8]) -> Result<Vec<u8>> {
-    if encrypted.len() < 16 {
-        return Err(Error::other("encrypted value is too short"));
-    }
-    if !encrypted.starts_with(b"v10") {
-        return Err(Error::other("not a v10 encrypted value"));
-    }
-    let key = pbkdf2_sha1(password, SALT);
-    let body = &encrypted[3..];
-    let mut buf = body.to_vec();
-    let dec = Aes128CbcDec::new_from_slices(&key, IV)
-        .map_err(|_| Error::other("bad key length"))?;
-    let plain = dec
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
-        .map_err(|_| Error::other("cookie decryption failed (wrong key)"))?;
-    // The plaintext is itself prefixed with "v10".
-    Ok(plain.strip_prefix(b"v10").unwrap_or(plain).to_vec())
-}
-
 fn decrypt_v11(encrypted_key_b64: &str, password: &[u8]) -> Result<[u8; 16]> {
     use base64::Engine;
     let raw = base64::engine::general_purpose::STANDARD

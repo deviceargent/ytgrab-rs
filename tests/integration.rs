@@ -78,6 +78,7 @@ fn templates_render_like_yt_dlp() {
         format_id: "137+140".into(),
         playlist_index: Some(2),
         playlist_title: "My Playlist".into(),
+        playlist_id: "PLabc".into(),
         epoch: 1_700_000_000,
     };
     assert_eq!(render("%(title)s.%(ext)s", &vars), "Video Title.mp4");

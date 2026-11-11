@@ -13,6 +13,7 @@ pub struct TemplateVars {
     pub format_id: String,
     pub playlist_index: Option<u64>,
     pub playlist_title: String,
+    pub playlist_id: String,
     pub epoch: u64,
 }
 
@@ -37,6 +38,7 @@ impl TemplateVars {
             self.playlist_index.map(|i| i.to_string()).unwrap_or_default(),
         );
         m.insert("playlist".into(), self.playlist_title.clone());
+        m.insert("playlist_id".into(), self.playlist_id.clone());
         m.insert("epoch".into(), self.epoch.to_string());
         m
     }
@@ -154,6 +156,7 @@ mod tests {
             format_id: "137+140".into(),
             playlist_index: None,
             playlist_title: String::new(),
+            playlist_id: String::new(),
             epoch: 0,
         }
     }

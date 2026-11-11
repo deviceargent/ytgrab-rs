@@ -190,6 +190,7 @@ async fn extract_audio_only(
         format_id: audio.itag.to_string(),
         playlist_index: pctx.index,
         playlist_title: pctx.title.clone(),
+        playlist_id: pctx.id.clone(),
         epoch: chrono::Utc::now().timestamp() as u64,
     };
 
@@ -304,6 +305,7 @@ async fn download_streams(
             .join("+"),
         playlist_index: pctx.index,
         playlist_title: pctx.title.clone(),
+        playlist_id: pctx.id.clone(),
         epoch: chrono::Utc::now().timestamp() as u64,
     };
 

@@ -31,26 +31,6 @@ mod flex {
         }
     }
 
-    pub fn string<'de, D>(d: D) -> Result<Option<String>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Val {
-            Str(String),
-            Int(i64),
-        }
-        match Option::<Val>::deserialize(d)? {
-            None => Ok(None),
-            Some(Val::Str(s)) => Ok(Some(s)),
-            Some(Val::Int(i)) => Ok(Some(i.to_string())),
-        }
-    }
-}
-
-fn parse_num(s: &Option<String>) -> Option<i64> {
-    s.as_ref().and_then(|v| v.parse().ok())
 }
 
 // ---------------------------------------------------------------------------
