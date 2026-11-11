@@ -1,5 +1,6 @@
 #include "output.hpp"
 
+#include <cctype>
 #include <map>
 
 #include "util.hpp"

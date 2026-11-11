@@ -7,6 +7,7 @@ on:
     paths:
       - "src/**"
       - "tests/**"
+      - "cpp/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/windows-binary.yml"
@@ -32,4 +33,25 @@ jobs:
         with:
           name: ytgrab-windows-x64
           path: target/release/ytgrab.exe
+          if-no-files-found: error
+
+  cpp-x64:
+    name: build ytgrab.exe (C++ port, x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S cpp -B build-cpp -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build-cpp --config Release
+
+      - name: Test
+        run: ctest --test-dir build-cpp -C Release --output-on-failure
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ytgrab-cpp-windows-x64
+          path: build-cpp/Release/ytgrab.exe
           if-no-files-found: error

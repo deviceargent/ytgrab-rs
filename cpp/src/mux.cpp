@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <iterator>
 #include <vector>
 
 #include "error.hpp"
