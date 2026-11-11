@@ -45,6 +45,9 @@ pub struct Part {
     pub kind: Kind,
     pub worst: bool,
     pub filters: Vec<Filter>,
+    /// A bare number in the selector: a format id if such a format exists,
+    /// otherwise a height cap (this is how yt-dlp reads `-f 137`).
+    pub itag: Option<i64>,
 }
 
 /// A parsed `-f` expression: parts joined by `+`.
@@ -114,22 +117,16 @@ fn parse_part(raw: &str) -> Result<Part> {
         return Ok(Part {
             kind: Kind::Video,
             worst: false,
-            filters: vec![Filter {
-                key: "height".into(),
-                op: Op::Le,
-                value: num.to_string(),
-            }],
+            filters: Vec::new(),
+            itag: Some(num),
         });
     }
     if let Ok(num) = lower.parse::<i64>() {
         return Ok(Part {
             kind: Kind::Video,
             worst: false,
-            filters: vec![Filter {
-                key: "height".into(),
-                op: Op::Le,
-                value: num.to_string(),
-            }],
+            filters: Vec::new(),
+            itag: Some(num),
         });
     }
 
@@ -151,6 +148,7 @@ fn parse_part(raw: &str) -> Result<Part> {
         kind,
         worst,
         filters,
+        itag: None,
     })
 }
 
@@ -395,6 +393,25 @@ fn pick_combined(formats: &[Format], part: &Part) -> Result<Format> {
 }
 
 fn pick_video(formats: &[Format], part: &Part) -> Result<Format> {
+    // An explicit format id wins over everything else.
+    if let Some(itag) = part.itag {
+        if let Some(f) = formats.iter().find(|f| f.itag == itag) {
+            return Ok(f.clone());
+        }
+        // No such format id: treat the number as a height cap.
+        let height_part = Part {
+            kind: part.kind,
+            worst: part.worst,
+            filters: vec![Filter {
+                key: "height".into(),
+                op: Op::Le,
+                value: itag.to_string(),
+            }],
+            itag: None,
+        };
+        return pick_video(formats, &height_part);
+    }
+
     let mut candidates: Vec<&Format> = formats
         .iter()
         .filter(|f| f.has_video())
@@ -412,7 +429,10 @@ fn pick_video(formats: &[Format], part: &Part) -> Result<Format> {
     }
 
     if candidates.is_empty() {
-        return Err(Error::NoFormat("best video".into()));
+        return Err(Error::NoFormat(match part.itag {
+            Some(id) => format!("format id {id}"),
+            None => "any video stream".to_string(),
+        }));
     }
     candidates.sort_by(|a, b| cmp_video(a, b));
     Ok(if part.worst {
@@ -439,7 +459,7 @@ fn pick_audio(formats: &[Format], part: &Part, prefer_opus: bool) -> Result<Form
     }
 
     if candidates.is_empty() {
-        return Err(Error::NoFormat("best audio".into()));
+        return Err(Error::NoFormat("any audio stream".into()));
     }
     candidates.sort_by(|a, b| cmp_audio(a, b, prefer_opus));
     Ok(if part.worst {
@@ -481,7 +501,7 @@ mod tests {
         assert_eq!(Selector::parse("best").unwrap().parts[0].kind, Kind::Combined);
         assert_eq!(Selector::parse("bv").unwrap().parts[0].kind, Kind::Video);
         assert_eq!(Selector::parse("ba").unwrap().parts[0].kind, Kind::Audio);
-        assert_eq!(Selector::parse("1080").unwrap().parts[0].filters.len(), 1);
+        assert_eq!(Selector::parse("1080").unwrap().parts[0].itag, Some(1080));
         assert!(Selector::parse("nonsense").is_err());
     }
 
@@ -497,6 +517,21 @@ mod tests {
         let sel = Selector::parse("bestvideo[height=1080]").unwrap();
         let picked = select(&sel, &sample()).unwrap();
         assert_eq!(picked.videos[0].itag, 137, "avc1 beats vp9 at 1080p");
+    }
+
+    #[test]
+    fn bare_number_is_a_format_id_when_it_exists() {
+        let sel = Selector::parse("137").unwrap();
+        let picked = select(&sel, &sample()).unwrap();
+        assert_eq!(picked.videos[0].itag, 137);
+    }
+
+    #[test]
+    fn bare_number_falls_back_to_a_height_cap() {
+        // No format with itag 720, so it means "at most 720p".
+        let sel = Selector::parse("720").unwrap();
+        let picked = select(&sel, &sample()).unwrap();
+        assert!(picked.videos[0].height() <= 720);
     }
 
     #[test]

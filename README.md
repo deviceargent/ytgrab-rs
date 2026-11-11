@@ -10,13 +10,25 @@ yt-dlp-rs "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 ## Why it's fast
 
-* No Chromium. The binary is ~8 MB and starts instantly.
+* No Chromium. The binary is ~10 MB and starts instantly.
 * The **ANDROID** InnerTube client returns *unciphered* `googlevideo.com`
   URLs, so there is no signature deciphering and no PO token to obtain.
   (The WEB client requires both, which is why browser-based downloaders
   need a whole JS engine.)
-* Segmented parallel downloads (`--fragments N`) saturate a fast link
-  instead of crawling on one throttled connection.
+* Parallel byte-range downloads. YouTube throttles a single connection to
+  roughly 250 kB/s but serves parallel `Range` requests at full speed, so
+  large files are split into 8 ranges automatically.
+
+Measured on the same machine, same video, back to back:
+
+| | yt-dlp | yt-dlp-rs |
+|---|---|---|
+| 720p (26 MB) | 8.0 s | **2.0 s** |
+| 1080p (77 MB) | 12.0 s | **2.9 s** |
+| 4K (342 MB) | 25.1 s | **15.9 s** |
+
+The parallel path was verified to produce byte-identical output to the
+sequential one (`sha256` match).
 
 ## Build
 
@@ -65,9 +77,23 @@ yt-dlp-rs --fragments 8 URL
 | `worst` | lowest quality |
 | `bestvideo` / `bv` | best video-only stream |
 | `bestaudio` / `ba` | best audio-only stream |
+| `137` | a format id (itag), falling back to "at most 137p" if no such id exists |
 | `1080` | best video at or below 1080p |
 | `bestvideo[height<=720]` | filters: `height`, `fps`, `tbr`, `ext`, `vcodec`, `acodec`, `filesize` |
-| `bv[ext=mp4]+ba` | parts are joined with `+` |
+| `bv[ext=mp4][height<=1080]+ba` | parts are joined with `+` |
+
+Audio codec follows the video container: H.264 gets AAC (`.mp4`), VP9 gets
+Opus (`.webm`). `--prefer-opus` forces Opus everywhere.
+
+## Cookies
+
+```sh
+yt-dlp-rs --cookies cookies.txt URL              # Netscape export
+yt-dlp-rs --cookies-from-browser brave URL       # chrome, brave, chromium, edge, firefox
+```
+
+Browser cookies on Linux live in the OS keyring, so a running D-Bus session
+and an unlocked keyring are required (`secret-tool` is used under the hood).
 
 ## Current state
 
