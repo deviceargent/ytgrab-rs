@@ -7,12 +7,12 @@
 //! cargo test -- --ignored --nocapture
 //! ```
 
-use yt_dlp_rs::formats::{select, Selector};
-use yt_dlp_rs::innertube::client::{ClientContext, InnerTube};
-use yt_dlp_rs::innertube::player;
-use yt_dlp_rs::output::{render, sanitize, TemplateVars};
-use yt_dlp_rs::subtitles::{parse_json3, to_srt, to_vtt};
-use yt_dlp_rs::url::{parse, Target};
+use ytgrab::formats::{select, Selector};
+use ytgrab::innertube::client::{ClientContext, InnerTube};
+use ytgrab::innertube::player;
+use ytgrab::output::{render, sanitize, TemplateVars};
+use ytgrab::subtitles::{parse_json3, to_srt, to_vtt};
+use ytgrab::url::{parse, Target};
 
 // ---------------------------------------------------------------------------
 // offline
@@ -139,7 +139,7 @@ async fn fetches_a_real_video() {
 #[tokio::test]
 #[ignore = "hits the network"]
 async fn lists_a_playlist() {
-    use yt_dlp_rs::innertube::browse;
+    use ytgrab::innertube::browse;
     let it = InnerTube::new(ClientContext::android()).unwrap();
     let items = browse::playlist(&it, "PLbpi6ZahtOH6Blw3RGYpWkSByi_T7Rygb")
         .await

@@ -1,12 +1,16 @@
-# yt-dlp-rs
+# ytgrab
 
 A YouTube downloader written in Rust. Talks to YouTube's internal
 **InnerTube** JSON API directly — no browser, no HTML scraping, no JS
 interpreter.
 
+```sh
+ytgrab "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
-yt-dlp-rs "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-```
+
+> Not affiliated with the [yt-dlp](https://github.com/yt-dlp/yt-dlp) project.
+> This is an independent implementation written from scratch; yt-dlp is
+> Python and stays the more feature-complete tool.
 
 ## Why it's fast
 
@@ -21,7 +25,7 @@ yt-dlp-rs "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 Measured on the same machine, same video, back to back:
 
-| | yt-dlp | yt-dlp-rs |
+| | yt-dlp | ytgrab |
 |---|---|---|
 | 720p (26 MB) | 8.0 s | **2.0 s** |
 | 1080p (77 MB) | 12.0 s | **2.9 s** |
@@ -30,11 +34,17 @@ Measured on the same machine, same video, back to back:
 The parallel path was verified to produce byte-identical output to the
 sequential one (`sha256` match).
 
-## Build
+## Install
+
+```sh
+cargo install --git https://github.com/fitzypopper/ytgrab-rs
+```
+
+Or from source:
 
 ```sh
 cargo build --release
-./target/release/yt-dlp-rs --help
+./target/release/ytgrab --help
 ```
 
 Requires `ffmpeg` on `PATH` for muxing and audio extraction.
@@ -43,30 +53,30 @@ Requires `ffmpeg` on `PATH` for muxing and audio extraction.
 
 ```sh
 # best available (video + audio, muxed to mp4)
-yt-dlp-rs "https://youtu.be/dQw4w9WgXcQ"
+ytgrab "https://youtu.be/dQw4w9WgXcQ"
 
 # pick a resolution
-yt-dlp-rs -f "bestvideo[height<=1080]+bestaudio" URL
+ytgrab -f "bestvideo[height<=1080]+bestaudio" URL
 
 # audio only
-yt-dlp-rs -x --audio-format mp3 URL
+ytgrab -x --audio-format mp3 URL
 
 # inspect what is available
-yt-dlp-rs --list-formats URL
-yt-dlp-rs --get-url URL
-yt-dlp-rs --dump-json URL
+ytgrab --list-formats URL
+ytgrab --get-url URL
+ytgrab --dump-json URL
 
 # sidecar files
-yt-dlp-rs --write-subs --write-auto-subs --write-thumbnail --write-info-json URL
+ytgrab --write-subs --write-auto-subs --write-thumbnail --write-info-json URL
 
 # output template (yt-dlp syntax)
-yt-dlp-rs -o "%(playlist_index)s - %(title)s.%(ext)s" URL
+ytgrab -o "%(playlist_index)s - %(title)s.%(ext)s" URL
 
 # whole playlist
-yt-dlp-rs --playlist "https://www.youtube.com/playlist?list=PL..."
+ytgrab --playlist "https://www.youtube.com/playlist?list=PL..."
 
 # 8 parallel segments per stream
-yt-dlp-rs --fragments 8 URL
+ytgrab --fragments 8 URL
 ```
 
 ### Format selectors
@@ -88,8 +98,8 @@ Opus (`.webm`). `--prefer-opus` forces Opus everywhere.
 ## Cookies
 
 ```sh
-yt-dlp-rs --cookies cookies.txt URL              # Netscape export
-yt-dlp-rs --cookies-from-browser brave URL       # chrome, brave, chromium, edge, firefox
+ytgrab --cookies cookies.txt URL              # Netscape export
+ytgrab --cookies-from-browser brave URL       # chrome, brave, chromium, edge, firefox
 ```
 
 Browser cookies on Linux live in the OS keyring, so a running D-Bus session

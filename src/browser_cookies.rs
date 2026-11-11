@@ -370,7 +370,7 @@ pub fn to_jar(cookies: &[BrowserCookie]) -> reqwest::cookie::Jar {
 fn tempdir_path() -> PathBuf {
     let dir = std::env::temp_dir();
     let name = format!(
-        "yt-dlp-rs-cookies-{}-{}.db",
+        "ytgrab-cookies-{}-{}.db",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

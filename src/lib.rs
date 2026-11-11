@@ -1,4 +1,4 @@
-//! yt-dlp-rs — a YouTube downloader written in Rust.
+//! ytgrab — a YouTube downloader written in Rust.
 
 pub mod browser_cookies;
 pub mod cli;

@@ -1,6 +1,6 @@
 # PROJECT NOTES
 
-Scratchpad for `yt-dlp-rs`. Written for future sessions — everything here was
+Scratchpad for `ytgrab` (formerly `ytgrab`). Written for future sessions — everything here was
 learned by poking at the live API, so do not "fix" it back.
 
 ## Layout
@@ -90,8 +90,8 @@ Measured on the same 720p video (26 MB), same machine, same minute:
 | | time |
 |---|---|
 | yt-dlp (single connection) | 8 s |
-| yt-dlp-rs, one connection | **213 s** (≈125 kB/s) |
-| yt-dlp-rs, 8 parallel byte-ranges | **2 s** |
+| ytgrab, one connection | **213 s** (≈125 kB/s) |
+| ytgrab, 8 parallel byte-ranges | **2 s** |
 | curl on yt-dlp's own URL | throttled to 247 kB/s |
 
 YouTube throttles a *single* HTTP connection to roughly 250 kB/s, but serves

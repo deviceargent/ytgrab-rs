@@ -6,7 +6,7 @@ use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "yt-dlp-rs",
+    name = "ytgrab",
     version,
     about = "A fast YouTube downloader written in Rust",
     long_about = None

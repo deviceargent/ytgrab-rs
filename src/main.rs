@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
-use yt_dlp_rs::cli::Cli;
-use yt_dlp_rs::runner;
+use ytgrab::cli::Cli;
+use ytgrab::runner;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -16,7 +16,7 @@ fn main() -> ExitCode {
         "info"
     };
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(format!("yt_dlp_rs={level},warn")))
+        .with_env_filter(EnvFilter::new(format!("ytgrab={level},warn")))
         .with_writer(std::io::stderr)
         .try_init();
 
