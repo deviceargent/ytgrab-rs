@@ -6,6 +6,7 @@ on:
     branches: ["**"]
     paths:
       - "src/**"
+      - "tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/windows-binary.yml"
@@ -23,6 +24,9 @@ jobs:
 
       - name: Build
         run: cargo build --release
+
+      - name: Test
+        run: cargo test --release
 
       - uses: actions/upload-artifact@v4
         with:
