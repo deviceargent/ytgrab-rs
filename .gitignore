@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.part
+*.part.seg*
+*.lock
+*.info.json
