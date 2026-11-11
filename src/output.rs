@@ -127,18 +127,22 @@ pub fn sanitize(input: &str) -> String {
 }
 
 /// Sanitise a whole path template, keeping directory separators intact.
+///
+/// An absolute path stays absolute: a leading `/` must not be dropped, or
+/// `/tmp/out.mp4` would end up in `./tmp/out.mp4`.
 pub fn sanitize_path(path: &str) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for (i, part) in path.split('/').enumerate() {
-        if i == 0 {
-            parts.push(sanitize(part));
-        } else if part.is_empty() {
-            continue;
-        } else {
-            parts.push(sanitize(part));
-        }
+    let absolute = path.starts_with('/');
+    let parts: Vec<String> = path
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(sanitize)
+        .collect();
+    let joined = parts.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
     }
-    parts.join("/")
 }
 
 #[cfg(test)]
@@ -177,6 +181,15 @@ mod tests {
     #[test]
     fn strips_path_separators() {
         assert_eq!(sanitize("a/b:c"), "a_b_c");
+    }
+
+    #[test]
+    fn keeps_absolute_paths_absolute() {
+        assert_eq!(sanitize_path("/tmp/out.mp4"), "/tmp/out.mp4");
+        assert_eq!(sanitize_path("out.mp4"), "out.mp4");
+        assert_eq!(sanitize_path("a/b/out.mp4"), "a/b/out.mp4");
+        // ".." is neutralised, it cannot escape the current directory.
+        assert_eq!(sanitize_path("../etc/passwd"), "video/etc/passwd");
     }
 
     #[test]

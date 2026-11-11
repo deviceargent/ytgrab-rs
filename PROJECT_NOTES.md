@@ -118,6 +118,36 @@ or `--write-auto-subs`, and a manual track wins over an automatic one for
 the same language. `caps=asr` in the track URL is used as a hint when
 present.
 
+## Googlevideo's range policy (important, measured)
+
+A 403 from googlevideo does **not** mean the URL expired. Measured on
+`https://youtu.be/JBoUwElRFVM` with the ANDROID client:
+
+| request | result |
+|---|---|
+| plain GET (whole file) | 403 |
+| `Range: bytes=0-` (open ended) | 403 |
+| `Range: bytes=0-15728641` | 206 |
+| `Range: bytes=0-16777215` | 403 |
+| `Range: bytes=500000000-50001572864` | 403 |
+
+So a signed URL serves a **bounded window starting at offset 0**, and the
+window size differs per format and per video:
+
+* itag 18 (muxed, `ratebypass=yes`) → the whole 332 MB
+* itag 137 (video only, 944 MB) → the first ~15.8 MiB
+* Rick Astley itag 137 (81 MB) → the whole file
+
+`ratebypass=yes` in the URL is the discriminator: googlevideo serves those
+without the window restriction. The ANDROID client only returns it for
+progressive formats.
+
+yt-dlp does not hit this because it uses the TVHTML5 client, whose URLs
+carry `n=<computed>` — but that needs a PO token and a JS runtime.
+
+The workaround in ytgrab: on a 403, mint a fresh URL and fall back to the
+next best format, preferring the ones whose URL has `ratebypass=yes`.
+
 ## Bugs found and fixed during the build
 
 - Template renderer emitted the conversion character (`%(title)s` -> `title` + `s`).

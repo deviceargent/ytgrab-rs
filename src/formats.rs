@@ -48,6 +48,8 @@ pub struct Part {
     /// A bare number in the selector: a format id if such a format exists,
     /// otherwise a height cap (this is how yt-dlp reads `-f 137`).
     pub itag: Option<i64>,
+    /// The same number read as a height cap.
+    pub height_cap: Option<i64>,
 }
 
 /// A parsed `-f` expression: parts joined by `+`.
@@ -119,6 +121,7 @@ fn parse_part(raw: &str) -> Result<Part> {
             worst: false,
             filters: Vec::new(),
             itag: Some(num),
+            height_cap: Some(num),
         });
     }
     if let Ok(num) = lower.parse::<i64>() {
@@ -127,6 +130,7 @@ fn parse_part(raw: &str) -> Result<Part> {
             worst: false,
             filters: Vec::new(),
             itag: Some(num),
+            height_cap: Some(num),
         });
     }
 
@@ -149,6 +153,7 @@ fn parse_part(raw: &str) -> Result<Part> {
         worst,
         filters,
         itag: None,
+        height_cap: None,
     })
 }
 
@@ -265,9 +270,19 @@ fn audio_codec_rank(format: &Format, prefer_opus: bool) -> u8 {
 }
 
 /// Compare two video formats; `Ordering::Greater` means `a` is better.
-fn cmp_video(a: &Format, b: &Format) -> Ordering {
-    a.height()
-        .cmp(&b.height())
+///
+/// `prefer_servable` puts formats whose URL carries `ratebypass=yes` first:
+/// googlevideo serves those without the range window, so they are the ones
+/// that can be downloaded at all. It is only used when falling back after
+/// the preferred format was refused.
+fn cmp_video(a: &Format, b: &Format, prefer_servable: bool) -> Ordering {
+    let servable = if prefer_servable {
+        a.has_rate_bypass().cmp(&b.has_rate_bypass())
+    } else {
+        Ordering::Equal
+    };
+    servable
+        .then_with(|| a.height().cmp(&b.height()))
         .then_with(|| a.fps().cmp(&b.fps()))
         .then_with(|| video_codec_rank(a).cmp(&video_codec_rank(b)))
         .then_with(|| a.tbr().cmp(&b.tbr()))
@@ -275,9 +290,14 @@ fn cmp_video(a: &Format, b: &Format) -> Ordering {
 }
 
 /// Compare two audio formats; `Ordering::Greater` means `a` is better.
-fn cmp_audio(a: &Format, b: &Format, prefer_opus: bool) -> Ordering {
-    audio_codec_rank(a, prefer_opus)
-        .cmp(&audio_codec_rank(b, prefer_opus))
+fn cmp_audio(a: &Format, b: &Format, prefer_opus: bool, prefer_servable: bool) -> Ordering {
+    let servable = if prefer_servable {
+        a.has_rate_bypass().cmp(&b.has_rate_bypass())
+    } else {
+        Ordering::Equal
+    };
+    servable
+        .then_with(|| audio_codec_rank(a, prefer_opus).cmp(&audio_codec_rank(b, prefer_opus)))
         .then_with(|| a.tbr().cmp(&b.tbr()))
         .then_with(|| b.itag.cmp(&a.itag))
 }
@@ -316,6 +336,37 @@ pub fn select_with(
     formats: &[Format],
     prefer_opus: bool,
 ) -> Result<Selection> {
+    select_excluding(selector, formats, prefer_opus, &[])
+}
+
+/// Like [`select_with`], but skips the given format ids.
+///
+/// Used to fall back to a different format when googlevideo refuses to serve
+/// the one that was picked.
+pub fn select_excluding(
+    selector: &Selector,
+    formats: &[Format],
+    prefer_opus: bool,
+    excluded: &[i64],
+) -> Result<Selection> {
+    select_excluding_with(selector, formats, prefer_opus, excluded, false)
+}
+
+/// Like [`select_excluding`], but can prefer formats that googlevideo is
+/// known to serve without a range window.
+pub fn select_excluding_with(
+    selector: &Selector,
+    formats: &[Format],
+    prefer_opus: bool,
+    excluded: &[i64],
+    prefer_servable: bool,
+) -> Result<Selection> {
+    let formats: Vec<Format> = formats
+        .iter()
+        .filter(|f| !excluded.contains(&f.itag))
+        .cloned()
+        .collect();
+    let formats = &formats[..];
     let mut videos: Vec<Format> = Vec::new();
     let mut audios: Vec<Format> = Vec::new();
 
@@ -325,12 +376,17 @@ pub fn select_with(
                 // "best" means best video plus best audio, muxed together.
                 // A progressive (combined) stream is only used when there is
                 // no separate video/audio pair available.
-                let video = pick_video(formats, part)?;
+                let video = pick_video(formats, part, prefer_servable)?;
+                if video.has_audio() {
+                    // A progressive stream already carries the audio.
+                    videos.push(video);
+                    continue;
+                }
                 // Match the audio codec to the video container: vp9 wants
                 // opus so the result can stay a .webm, h.264 wants AAC so it
                 // can stay a .mp4.
                 let prefer_opus_for_video = prefer_opus || video.ext() == "webm";
-                let audio = pick_audio(formats, part, prefer_opus_for_video);
+                let audio = pick_audio(formats, part, prefer_opus_for_video, prefer_servable);
                 match audio {
                     Ok(a) if a.is_audio_only() => {
                         videos.push(video);
@@ -345,7 +401,7 @@ pub fn select_with(
             }
             Kind::Video => {
                 // An explicit video selector means video only.
-                videos.push(pick_video(formats, part)?);
+                videos.push(pick_video(formats, part, prefer_servable)?);
             }
             Kind::Audio => {
                 // Keep the audio codec compatible with the video container
@@ -355,7 +411,7 @@ pub fn select_with(
                         .first()
                         .map(|v| v.ext() == "webm")
                         .unwrap_or(false);
-                audios.push(pick_audio(formats, part, want_opus)?);
+                audios.push(pick_audio(formats, part, want_opus, prefer_servable)?);
             }
         }
     }
@@ -381,8 +437,9 @@ pub fn best_audio_only(formats: &[Format], prefer_opus: bool) -> Result<Format> 
         worst: false,
         filters: Vec::new(),
         itag: None,
+        height_cap: None,
     };
-    pick_audio(formats, &part, prefer_opus)
+    pick_audio(formats, &part, prefer_opus, false)
 }
 
 /// The best progressive format (video and audio in one file).
@@ -395,7 +452,7 @@ fn pick_combined(formats: &[Format], part: &Part) -> Result<Format> {
     if candidates.is_empty() {
         return Err(Error::NoFormat("best combined".into()));
     }
-    candidates.sort_by(|a, b| cmp_video(a, b));
+    candidates.sort_by(|a, b| cmp_video(a, b, false));
     Ok(if part.worst {
         candidates[0].clone()
     } else {
@@ -403,7 +460,7 @@ fn pick_combined(formats: &[Format], part: &Part) -> Result<Format> {
     })
 }
 
-fn pick_video(formats: &[Format], part: &Part) -> Result<Format> {
+fn pick_video(formats: &[Format], part: &Part, prefer_servable: bool) -> Result<Format> {
     // An explicit format id wins over everything else.
     if let Some(itag) = part.itag {
         if let Some(f) = formats.iter().find(|f| f.itag == itag) {
@@ -419,8 +476,16 @@ fn pick_video(formats: &[Format], part: &Part) -> Result<Format> {
                 value: itag.to_string(),
             }],
             itag: None,
+            height_cap: None,
         };
-        return pick_video(formats, &height_part);
+        // Only use the height reading when something actually matches it:
+        // `-f 137` means itag 137, and there is no 137p video.
+        if formats
+            .iter()
+            .any(|f| f.has_video() && matches(f, &height_part.filters[0]))
+        {
+            return pick_video(formats, &height_part, prefer_servable);
+        }
     }
 
     let mut candidates: Vec<&Format> = formats
@@ -429,14 +494,26 @@ fn pick_video(formats: &[Format], part: &Part) -> Result<Format> {
         .filter(|f| part.filters.iter().all(|fl| matches(f, fl)))
         .collect();
 
-    // Prefer video-only streams, but fall back to combined ones.
-    let video_only: Vec<&Format> = candidates
-        .iter()
-        .copied()
-        .filter(|f| f.is_video_only())
-        .collect();
-    if !video_only.is_empty() {
-        candidates = video_only;
+    if prefer_servable {
+        // Googlevideo told us which URLs it will serve in full. Use those.
+        let servable: Vec<&Format> = candidates
+            .iter()
+            .copied()
+            .filter(|f| f.has_rate_bypass())
+            .collect();
+        if !servable.is_empty() {
+            candidates = servable;
+        }
+    } else {
+        // Prefer video-only streams, but fall back to combined ones.
+        let video_only: Vec<&Format> = candidates
+            .iter()
+            .copied()
+            .filter(|f| f.is_video_only())
+            .collect();
+        if !video_only.is_empty() {
+            candidates = video_only;
+        }
     }
 
     if candidates.is_empty() {
@@ -445,7 +522,7 @@ fn pick_video(formats: &[Format], part: &Part) -> Result<Format> {
             None => "any video stream".to_string(),
         }));
     }
-    candidates.sort_by(|a, b| cmp_video(a, b));
+    candidates.sort_by(|a, b| cmp_video(a, b, prefer_servable));
     Ok(if part.worst {
         candidates[0].clone()
     } else {
@@ -453,7 +530,12 @@ fn pick_video(formats: &[Format], part: &Part) -> Result<Format> {
     })
 }
 
-fn pick_audio(formats: &[Format], part: &Part, prefer_opus: bool) -> Result<Format> {
+fn pick_audio(
+    formats: &[Format],
+    part: &Part,
+    prefer_opus: bool,
+    prefer_servable: bool,
+) -> Result<Format> {
     let mut candidates: Vec<&Format> = formats
         .iter()
         .filter(|f| f.has_audio())
@@ -472,7 +554,7 @@ fn pick_audio(formats: &[Format], part: &Part, prefer_opus: bool) -> Result<Form
     if candidates.is_empty() {
         return Err(Error::NoFormat("any audio stream".into()));
     }
-    candidates.sort_by(|a, b| cmp_audio(a, b, prefer_opus));
+    candidates.sort_by(|a, b| cmp_audio(a, b, prefer_opus, prefer_servable));
     Ok(if part.worst {
         candidates[0].clone()
     } else {

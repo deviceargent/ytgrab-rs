@@ -310,6 +310,17 @@ impl Format {
         self.fps.unwrap_or(0)
     }
 
+    /// Does the signed URL carry `ratebypass=yes`?
+    ///
+    /// Googlevideo serves those URLs without the range window that limits
+    /// the others, so they are the ones that can actually be downloaded.
+    pub fn has_rate_bypass(&self) -> bool {
+        self.url
+            .as_deref()
+            .map(|u| u.contains("ratebypass=yes"))
+            .unwrap_or(false)
+    }
+
     /// Human readable size, yt-dlp style.
     pub fn size_str(&self) -> String {
         match self.size_bytes() {

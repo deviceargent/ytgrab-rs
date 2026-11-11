@@ -19,6 +19,17 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
 
+/// The largest range googlevideo will serve in one response.
+///
+/// Requests for a bigger range are answered with `403 Forbidden`, and so is
+/// a plain GET for the whole file — the server insists on ranged, bounded
+/// requests. The exact limit differs per format: some URLs happily serve
+/// hundreds of megabytes, others are capped at about 15 MiB.
+const CHUNK_SIZE: u64 = 15 * 1024 * 1024;
+
+/// The smallest range we bother trying.
+const MIN_CHUNK_SIZE: u64 = 256 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct Downloader {
     http: reqwest::Client,
@@ -79,18 +90,19 @@ impl Downloader {
         bar: &ProgressBar,
         total_hint: Option<u64>,
         fragments: usize,
+        itag: i64,
     ) -> Result<u64> {
         let _lock = LockFile::acquire(dest)?;
         if fragments > 1 {
             if let Some(total) = total_hint {
                 if total > 1024 * 1024 {
                     return self
-                        .download_segmented(url, dest, bar, total, fragments)
+                        .download_segmented(url, dest, bar, total, fragments, itag)
                         .await;
                 }
             }
         }
-        self.download_single(url, dest, bar, total_hint).await
+        self.download_single(url, dest, bar, total_hint, itag).await
     }
 
     async fn download_single(
@@ -99,6 +111,7 @@ impl Downloader {
         dest: &Path,
         bar: &ProgressBar,
         total_hint: Option<u64>,
+        itag: i64,
     ) -> Result<u64> {
         let part_path = part_path(dest);
         if let Some(parent) = part_path.parent() {
@@ -107,21 +120,56 @@ impl Downloader {
 
         let mut existing = tokio::fs::metadata(&part_path).await.ok().map(|m| m.len());
 
-        // If the .part file is already complete, just finalise it.
-        if let (Some(len), Some(total)) = (existing, total_hint) {
-            if total > 0 && len >= total {
-                finalize(&part_path, dest).await?;
-                bar.set_position(total);
-                return Ok(0);
+        // How big is the file? Trust the player response, otherwise ask the
+        // server with a one byte range request.
+        let mut total = total_hint.filter(|t| *t > 0);
+        if total.is_none() {
+            match self.probe_size(url).await {
+                Ok(t) => total = Some(t),
+                Err(e) => tracing::debug!("could not probe the size: {e}"),
             }
         }
 
-        let mut attempt = 0u32;
-        loop {
-            let mut req = self.http.get(url).header("Accept-Encoding", "identity");
-            if let Some(offset) = existing.filter(|n| *n > 0) {
-                req = req.header("Range", format!("bytes={offset}-"));
+        // Already complete?
+        if let (Some(len), Some(t)) = (existing, total) {
+            if len >= t {
+                finalize(&part_path, dest).await?;
+                bar.set_position(t);
+                return Ok(0);
             }
+        }
+        if let Some(t) = total {
+            bar.set_length(t);
+        }
+
+        let mut attempt = 0u32;
+        // Start with the biggest range we are willing to ask for and shrink
+        // it if the server refuses. Some formats are only served in small
+        // windows, and 403 means "too big", not "expired".
+        let mut chunk = CHUNK_SIZE;
+        loop {
+            let offset = existing.unwrap_or(0);
+            if let Some(t) = total {
+                if offset >= t {
+                    break;
+                }
+            }
+
+            // A bounded range of at most `chunk` bytes. An open ended range
+            // (`bytes=N-`) is rejected with 403, and so is a range that
+            // covers more than the server is willing to serve.
+            let end = match total {
+                Some(t) => (offset + chunk - 1).min(t - 1),
+                None => offset + chunk - 1,
+            };
+
+            // The Range header is always sent, even on a fresh download:
+            // without it googlevideo answers 403.
+            let req = self
+                .http
+                .get(url)
+                .header("Accept-Encoding", "identity")
+                .header("Range", format!("bytes={offset}-{end}"));
 
             let resp = match req.send().await {
                 Ok(r) => r,
@@ -137,9 +185,17 @@ impl Downloader {
 
             let status = resp.status();
             if status == 403 || status == 410 {
-                return Err(Error::other(format!(
-                    "googlevideo rejected the request (HTTP {status}) — the URL expired, re-run the command"
-                )));
+                // 403 from googlevideo usually means the range was too
+                // large. Ask for less and try again before giving up.
+                if status == 403 && chunk > MIN_CHUNK_SIZE {
+                    chunk = (chunk / 2).max(MIN_CHUNK_SIZE);
+                    tracing::debug!("range rejected, retrying with {chunk} byte chunks");
+                    continue;
+                }
+                return Err(Error::SignedUrl {
+                    status: status.as_u16(),
+                    itag,
+                });
             }
             if !status.is_success() {
                 attempt += 1;
@@ -150,29 +206,22 @@ impl Downloader {
                 continue;
             }
 
-            let resuming = status == 206 && existing.is_some();
-            if !resuming {
-                // Server ignored the range header: start over.
+            let partial = status == 206;
+            if !partial && offset > 0 {
+                // The server ignored our range header: start over.
                 existing = Some(0);
+                attempt += 1;
+                if attempt > self.retries {
+                    return Err(Error::other("server ignored the range header"));
+                }
+                continue;
             }
 
-            let content_length = resp.content_length();
-            let total = match (total_hint, content_length) {
-                (Some(t), Some(_)) => Some(t),
-                (Some(t), None) => Some(t),
-                (None, Some(cl)) => Some(cl),
-                (None, None) => None,
-            };
-            if let Some(t) = total {
-                bar.set_length(t);
-            }
-
-            let offset = existing.unwrap_or(0);
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
-                .append(resuming)
-                .truncate(!resuming)
+                .append(partial && offset > 0)
+                .truncate(!partial || offset == 0)
                 .open(&part_path)
                 .await?;
 
@@ -184,7 +233,7 @@ impl Downloader {
                     Ok(c) => c,
                     Err(e) => {
                         // The connection dropped mid-transfer. Keep what we
-                        // have and reconnect with a Range header.
+                        // have and reconnect with the next range.
                         tracing::warn!("transfer interrupted: {e}; resuming");
                         broken = true;
                         break;
@@ -198,11 +247,13 @@ impl Downloader {
             drop(file);
 
             existing = Some(offset + written);
+
             if let Some(t) = total {
                 if existing.unwrap_or(0) >= t {
                     break;
                 }
-            } else if !broken {
+            } else if written < (end - offset + 1) && !broken {
+                // Short read: the server has nothing more to give.
                 break;
             }
 
@@ -219,6 +270,36 @@ impl Downloader {
         Ok(existing.unwrap_or(0))
     }
 
+    /// Ask the server how big the file is, using a one byte range request.
+    async fn probe_size(&self, url: &str) -> Result<u64> {
+        let resp = self
+            .http
+            .get(url)
+            .header("Accept-Encoding", "identity")
+            .header("Range", "bytes=0-0")
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(Error::other(format!(
+                "size probe failed with HTTP {}",
+                resp.status()
+            )));
+        }
+        let content_range = resp
+            .headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        // "bytes 0-0/944298744"
+        let total = content_range
+            .rsplit('/')
+            .next()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .ok_or_else(|| Error::other("no total in the content-range header"))?;
+        Ok(total)
+    }
+
     /// Split the file into `fragments` byte ranges, fetch them concurrently.
     async fn download_segmented(
         &self,
@@ -227,6 +308,7 @@ impl Downloader {
         bar: &ProgressBar,
         total: u64,
         fragments: usize,
+        itag: i64,
     ) -> Result<u64> {
         let n = fragments.max(1);
         let chunk = total.div_ceil(n as u64);
@@ -253,7 +335,7 @@ impl Downloader {
 
             handles.push(tokio::spawn(async move {
                 download_range(
-                    &http, &url, &seg_path, start, end, &bar, &downloaded, retries,
+                    &http, &url, &seg_path, start, end, &bar, &downloaded, retries, itag,
                 )
                 .await
             }));
@@ -304,6 +386,7 @@ async fn download_range(
     bar: &ProgressBar,
     downloaded: &AtomicU64,
     retries: u32,
+    itag: i64,
 ) -> Result<()> {
     let expected = end - start + 1;
 
@@ -317,16 +400,24 @@ async fn download_range(
     let mut attempt = 0u32;
     while have < expected {
         let from = start + have;
+        // Bounded range: googlevideo answers 403 for anything longer.
+        let to = (from + CHUNK_SIZE - 1).min(end);
         let resp = http
             .get(url)
             .header("Accept-Encoding", "identity")
-            .header("Range", format!("bytes={from}-{end}"))
+            .header("Range", format!("bytes={from}-{to}"))
             .send()
             .await;
 
         let resp = match resp {
             Ok(r) if r.status().is_success() => r,
             Ok(r) if r.status() == 416 => break,
+            Ok(r) if r.status() == 403 || r.status() == 410 => {
+                return Err(Error::SignedUrl {
+                    status: r.status().as_u16(),
+                    itag,
+                });
+            }
             Ok(r) => {
                 attempt += 1;
                 if attempt > retries {
@@ -352,14 +443,37 @@ async fn download_range(
             .open(dest)
             .await?;
         let mut stream = resp.bytes_stream();
+        let mut written: u64 = 0;
+        let mut broken = false;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(_) => {
+                    broken = true;
+                    break;
+                }
+            };
             file.write_all(&chunk).await?;
-            have += chunk.len() as u64;
-            downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            written += chunk.len() as u64;
+            downloaded.fetch_add(written, Ordering::Relaxed);
             bar.inc(chunk.len() as u64);
         }
         file.flush().await?;
+        drop(file);
+
+        have += written;
+        if written == 0 {
+            attempt += 1;
+            if attempt > retries {
+                return Err(Error::other("segment made no progress"));
+            }
+            tokio::time::sleep(backoff(attempt)).await;
+        } else if broken {
+            attempt += 1;
+            if attempt > retries {
+                return Err(Error::other("segment kept breaking mid-transfer"));
+            }
+        }
     }
 
     Ok(())

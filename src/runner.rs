@@ -129,46 +129,77 @@ async fn download_video(
     video_id: &str,
     pctx: &PlaylistContext,
 ) -> Result<()> {
-    let player = player::fetch(it, video_id).await?;
-    let streaming = player
-        .streaming_data
-        .as_ref()
-        .ok_or_else(|| Error::Unavailable("no streaming data".into()))?;
-    let formats = player::all_formats(streaming);
+    // googlevideo serves some formats only in small windows and refuses
+    // larger range requests with a 403. When that happens, mint a fresh URL
+    // and fall back to the next best format.
+    let mut failed_formats: Vec<i64> = Vec::new();
 
-    if cli.list_formats {
-        print_formats(&formats);
-        return Ok(());
-    }
+    loop {
+        let player = player::fetch(it, video_id).await?;
+        let streaming = player
+            .streaming_data
+            .as_ref()
+            .ok_or_else(|| Error::Unavailable("no streaming data".into()))?;
+        let formats = player::all_formats(streaming);
 
-    let selector = Selector::parse(&cli.format)?;
-    let selection = formats::select_with(&selector, &formats, cli.prefer_opus)?;
-
-    if cli.get_url {
-        for f in selection.videos.iter().chain(selection.audios.iter()) {
-            if let Some(url) = &f.url {
-                println!("{url}");
-            }
+        if cli.list_formats {
+            print_formats(&formats);
+            return Ok(());
         }
-        return Ok(());
-    }
 
-    let details = player.video_details.clone().unwrap_or_default();
-    if cli.dump_json {
-        println!("{}", build_info_json(&player, &selection, video_id));
-        return Ok(());
-    }
+        let selector = Selector::parse(&cli.format)?;
+        let selection = formats::select_excluding_with(
+            &selector,
+            &formats,
+            cli.prefer_opus,
+            &failed_formats,
+            !failed_formats.is_empty(),
+        )?;
 
-    // Extracting audio never needs the video stream at all.
-    if cli.extract_audio {
-        let audio = match selection.audios.first() {
-            Some(a) => a.clone(),
-            None => formats::best_audio_only(&formats, cli.prefer_opus)?,
-        };
-        return extract_audio_only(dl, cli, &details, &audio, pctx, video_id).await;
-    }
+        if cli.get_url {
+            for f in selection.videos.iter().chain(selection.audios.iter()) {
+                if let Some(url) = &f.url {
+                    println!("{url}");
+                }
+            }
+            return Ok(());
+        }
 
-    download_streams(dl, cli, &player, &details, &selection, pctx, video_id).await
+        let details = player.video_details.clone().unwrap_or_default();
+        if cli.dump_json {
+            println!("{}", build_info_json(&player, &selection, video_id));
+            return Ok(());
+        }
+
+        // Extracting audio never needs the video stream at all.
+        if cli.extract_audio {
+            let audio = match selection.audios.first() {
+                Some(a) => a.clone(),
+                None => formats::best_audio_only(&formats, cli.prefer_opus)?,
+            };
+            return extract_audio_only(dl, cli, &details, &audio, pctx, video_id).await;
+        }
+
+        match download_streams(dl, cli, &player, &details, &selection, pctx, video_id).await {
+            Ok(()) => return Ok(()),
+            Err(Error::SignedUrl { status, itag }) => {
+                failed_formats.push(itag);
+                if failed_formats.len() > MAX_FORMAT_FALLBACKS {
+                    return Err(Error::other(format!(
+                        "googlevideo refused every format it offered (HTTP {status})"
+                    )));
+                }
+                eprintln!(
+                    "googlevideo refused format {itag} (HTTP {status}); \
+                     minting a new URL and trying another format"
+                );
+                // The half downloaded bytes belong to the refused format.
+                remove_stale_parts(&details, pctx, cli);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Download just the audio stream and convert it to the requested format.
@@ -224,6 +255,7 @@ async fn extract_audio_only(
         &bar,
         audio.size_bytes(),
         fragment_count(cli, audio.size_bytes()),
+        audio.itag,
     )
     .await?;
     bar.finish_and_clear();
@@ -341,6 +373,7 @@ async fn download_streams(
         &video_bar,
         video.size_bytes(),
         fragment_count(cli, video.size_bytes()),
+        video.itag,
     )
     .await?;
     video_bar.finish_and_clear();
@@ -361,6 +394,7 @@ async fn download_streams(
             &bar,
             a.size_bytes(),
             fragment_count(cli, a.size_bytes()),
+            a.itag,
         )
         .await?;
         bar.finish_and_clear();
@@ -548,6 +582,47 @@ fn json3_url(base: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/// How many alternative formats to try when googlevideo refuses one.
+const MAX_FORMAT_FALLBACKS: usize = 6;
+
+/// Delete the partial files of formats that could not be downloaded.
+///
+/// They hold the bytes of a different format, so resuming them would
+/// produce a corrupt file.
+fn remove_stale_parts(details: &VideoDetails, pctx: &PlaylistContext, cli: &Cli) {
+    let vars = TemplateVars {
+        title: details.title.clone(),
+        id: String::new(),
+        ext: "mp4".to_string(),
+        uploader: details.author.clone().unwrap_or_default(),
+        duration_secs: details.duration_secs(),
+        resolution: String::new(),
+        format_id: String::new(),
+        playlist_index: pctx.index,
+        playlist_title: pctx.title.clone(),
+        playlist_id: pctx.id.clone(),
+        epoch: 0,
+    };
+    let out_path = PathBuf::from(output::sanitize_path(&output::render(&cli.output, &vars)));
+    let Some(stem) = out_path.file_stem().map(|s| s.to_string_lossy().to_string()) else {
+        return;
+    };
+    let parent = match out_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+
+    let Ok(entries) = std::fs::read_dir(&parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(&stem) && (name.contains(".f") || name.ends_with(".part")) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
 
 /// How many byte-ranges to fetch in parallel for a stream of this size.
 ///
