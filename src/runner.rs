@@ -765,7 +765,7 @@ fn build_formats_json(
                 "filesize": f.size_bytes(),
                 "has_video": f.has_video(),
                 "has_audio": f.has_audio(),
-                "url": f.url,
+                "url": f.url.as_deref(),
             })
         })
         .collect();
