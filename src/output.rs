@@ -129,15 +129,29 @@ pub fn sanitize(input: &str) -> String {
 /// Sanitise a whole path template, keeping directory separators intact.
 ///
 /// An absolute path stays absolute: a leading `/` must not be dropped, or
-/// `/tmp/out.mp4` would end up in `./tmp/out.mp4`.
+/// `/tmp/out.mp4` would end up in `./tmp/out.mp4`. Windows separators and
+/// drive prefixes are understood too, so `C:\out\%(title)s.mp4` keeps its
+/// directories instead of collapsing into one long filename.
 pub fn sanitize_path(path: &str) -> String {
-    let absolute = path.starts_with('/');
-    let parts: Vec<String> = path
+    let normalized = path.replace('\\', "/");
+    let absolute = normalized.starts_with('/');
+    let drive_prefix = {
+        let bytes = normalized.as_bytes();
+        bytes.len() > 1 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    };
+    let parts: Vec<String> = normalized
         .split('/')
         .filter(|p| !p.is_empty())
         .map(sanitize)
         .collect();
-    let joined = parts.join("/");
+    let mut joined = parts.join("/");
+    if drive_prefix {
+        // `C:` was sanitised to `C_`; put the colon back.
+        if joined.len() > 1 && joined.as_bytes()[1] == b'_' {
+            joined.replace_range(1..2, ":");
+        }
+        return joined;
+    }
     if absolute {
         format!("/{joined}")
     } else {
@@ -190,6 +204,12 @@ mod tests {
         assert_eq!(sanitize_path("a/b/out.mp4"), "a/b/out.mp4");
         // ".." is neutralised, it cannot escape the current directory.
         assert_eq!(sanitize_path("../etc/passwd"), "video/etc/passwd");
+        // Windows absolute paths keep their directories and drive.
+        assert_eq!(
+            sanitize_path(r"C:\Users\me\Downloads\%(title)s.%(ext)s"),
+            "C:/Users/me/Downloads/%(title)s.%(ext)s"
+        );
+        assert_eq!(sanitize_path(r"sub\out.mp4"), "sub/out.mp4");
     }
 
     #[test]

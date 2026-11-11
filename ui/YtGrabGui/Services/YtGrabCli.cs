@@ -270,7 +270,10 @@ internal static partial class YtGrabCli
         }
 
         psi.ArgumentList.Add("-o");
-        psi.ArgumentList.Add(Path.Combine(outputDirectory, template));
+        // The working directory is already the output folder, so a relative
+        // template keeps `Saved ...` readable and avoids Windows path
+        // separators being sanitised into the filename.
+        psi.ArgumentList.Add(template);
         psi.ArgumentList.Add("--no-playlist");
         psi.ArgumentList.Add(url);
 
