@@ -106,6 +106,18 @@ connection.
 The parallel path was verified to produce **byte-identical** output to the
 sequential path (`sha256` match on both the video and the audio stream).
 
+## Subtitle classification
+
+The ANDROID client does not return the `kind` field for caption tracks, so a
+track cannot be reliably labelled "manual" or "automatic" the way yt-dlp
+does (yt-dlp gets it from the WEB client, which needs a PO token). The
+timedtext `type=list` endpoint is dead.
+
+Workaround: a track with no `kind` is accepted by **either** `--write-subs`
+or `--write-auto-subs`, and a manual track wins over an automatic one for
+the same language. `caps=asr` in the track URL is used as a hint when
+present.
+
 ## Bugs found and fixed during the build
 
 - Template renderer emitted the conversion character (`%(title)s` -> `title` + `s`).

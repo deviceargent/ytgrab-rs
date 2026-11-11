@@ -374,6 +374,17 @@ pub fn select_with(
     Ok(Selection { videos, audios })
 }
 
+/// The best audio-only stream, ignoring the selector.
+pub fn best_audio_only(formats: &[Format], prefer_opus: bool) -> Result<Format> {
+    let part = Part {
+        kind: Kind::Audio,
+        worst: false,
+        filters: Vec::new(),
+        itag: None,
+    };
+    pick_audio(formats, &part, prefer_opus)
+}
+
 /// The best progressive format (video and audio in one file).
 fn pick_combined(formats: &[Format], part: &Part) -> Result<Format> {
     let mut candidates: Vec<&Format> = formats

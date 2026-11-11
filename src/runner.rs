@@ -159,7 +159,94 @@ async fn download_video(
         return Ok(());
     }
 
+    // Extracting audio never needs the video stream at all.
+    if cli.extract_audio {
+        let audio = match selection.audios.first() {
+            Some(a) => a.clone(),
+            None => formats::best_audio_only(&formats, cli.prefer_opus)?,
+        };
+        return extract_audio_only(dl, cli, &details, &audio, pctx, video_id).await;
+    }
+
     download_streams(dl, cli, &player, &details, &selection, pctx, video_id).await
+}
+
+/// Download just the audio stream and convert it to the requested format.
+async fn extract_audio_only(
+    dl: &Downloader,
+    cli: &Cli,
+    details: &VideoDetails,
+    audio: &Format,
+    pctx: &PlaylistContext,
+    video_id: &str,
+) -> Result<()> {
+    let vars = TemplateVars {
+        title: details.title.clone(),
+        id: video_id.to_string(),
+        ext: cli.audio_format.clone(),
+        uploader: details.author.clone().unwrap_or_default(),
+        duration_secs: details.duration_secs(),
+        resolution: String::new(),
+        format_id: audio.itag.to_string(),
+        playlist_index: pctx.index,
+        playlist_title: pctx.title.clone(),
+        epoch: chrono::Utc::now().timestamp() as u64,
+    };
+
+    let out_path = PathBuf::from(output::sanitize_path(&output::render(&cli.output, &vars)));
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let stem = out_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "audio".into());
+    let parent = out_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let source_ext = audio.ext();
+    let tmp = parent.join(format!("{stem}.f{}.{source_ext}", audio.itag));
+    let url = audio
+        .url
+        .clone()
+        .ok_or_else(|| Error::other("audio stream has no url"))?;
+
+    let mp = MultiProgress::new();
+    let bar = mp.add(mux_progress_bar(audio.size_bytes(), "audio"));
+    dl.download(
+        &url,
+        &tmp,
+        &bar,
+        audio.size_bytes(),
+        fragment_count(cli, audio.size_bytes()),
+    )
+    .await?;
+    bar.finish_and_clear();
+
+    // Already in the requested container? Then no conversion is needed.
+    if source_ext == cli.audio_format {
+        std::fs::rename(&tmp, &out_path)?;
+    } else {
+        let codec = match cli.audio_format.as_str() {
+            "mp3" => "libmp3lame",
+            "m4a" | "aac" => "aac",
+            "opus" => "libopus",
+            "flac" => "flac",
+            "wav" => "pcm_s16le",
+            other => other,
+        };
+        mux::extract_audio(&tmp, &out_path, codec, Some("192k")).await?;
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    if !cli.quiet {
+        eprintln!("Saved {}", out_path.display());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -288,20 +375,7 @@ async fn download_streams(
         duration: details.duration_secs(),
     };
 
-    if cli.extract_audio {
-        let target = parent.join(format!("{stem}.{}", cli.audio_format));
-        mux::extract_audio(
-            &video_tmp,
-            &target,
-            &cli.audio_format,
-            Some(&format!("{}k", 192)),
-        )
-        .await?;
-        let _ = std::fs::remove_file(&video_tmp);
-        if !cli.quiet {
-            eprintln!("Saved {}", target.display());
-        }
-    } else if let Some(audio_path) = &audio_tmp {
+    if let Some(audio_path) = &audio_tmp {
         if cli.no_mux {
             // Keep the two streams separate, like yt-dlp's --no-mux.
             if !cli.quiet {
@@ -372,22 +446,44 @@ async fn write_subtitles(
         return Ok(());
     };
 
-    let wanted: Vec<&str> = cli.sub_lang.split(',').map(|s| s.trim()).collect();
+    let wanted_langs: Vec<String> = cli
+        .sub_lang
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
 
+    // One file per language: a manual track wins over an automatic one.
+    let mut chosen: Vec<(String, &CaptionTrack)> = Vec::new();
     for track in &tracklist.caption_tracks {
         let lang = track.language_code.clone().unwrap_or_default();
-        let is_auto = track.kind.as_deref() == Some("asr");
+        let kind = track_kind(track);
 
-        if is_auto && !cli.write_auto_subs {
+        let wanted = match kind {
+            TrackKind::Manual => cli.write_subs,
+            TrackKind::Auto => cli.write_auto_subs,
+            // The ANDROID client does not tell us whether a track was
+            // uploaded or generated, so accept it for either flag.
+            TrackKind::Unknown => cli.write_subs || cli.write_auto_subs,
+        };
+        if !wanted {
             continue;
         }
-        if !is_auto && !cli.write_subs {
-            continue;
-        }
-        if !wanted.iter().any(|w| w == &lang || *w == "all") {
+        if !wanted_langs.iter().any(|w| w == &lang || *w == "all") {
             continue;
         }
 
+        match chosen.iter_mut().find(|(l, _)| *l == lang) {
+            Some((_, existing)) => {
+                // Prefer a manual track over an automatic one.
+                if track_kind(existing) != TrackKind::Manual && kind == TrackKind::Manual {
+                    *existing = track;
+                }
+            }
+            None => chosen.push((lang, track)),
+        }
+    }
+
+    for (lang, track) in chosen {
         let Some(url) = json3_url(&track.base_url) else {
             continue;
         };
@@ -404,6 +500,27 @@ async fn write_subtitles(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackKind {
+    Manual,
+    Auto,
+    Unknown,
+}
+
+/// Classify a subtitle track as manual, automatic, or unknown.
+///
+/// The ANDROID client omits the `kind` field, so fall back to looking for
+/// the `caps=asr` marker in the track URL.
+fn track_kind(track: &CaptionTrack) -> TrackKind {
+    if track.kind.as_deref() == Some("asr") || track.base_url.contains("caps=asr") {
+        TrackKind::Auto
+    } else if track.kind.as_deref() == Some("asr") || track.vss_id.as_deref() == Some("manual") {
+        TrackKind::Manual
+    } else {
+        TrackKind::Unknown
+    }
 }
 
 /// Swap the timedtext format parameter for `json3`.
